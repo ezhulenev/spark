@@ -17,6 +17,7 @@
 
 package org.apache.spark.sql.json
 
+import scala.collection.Map
 import scala.collection.convert.Wrappers.{JMapWrapper, JListWrapper}
 import scala.math.BigDecimal
 
@@ -27,7 +28,7 @@ import org.apache.spark.sql.catalyst.analysis.HiveTypeCoercion
 import org.apache.spark.sql.catalyst.expressions._
 import org.apache.spark.sql.catalyst.types._
 import org.apache.spark.sql.catalyst.ScalaReflection
-import org.apache.spark.sql.Logging
+import org.apache.spark.Logging
 
 private[sql] object JsonRDD extends Logging {
 
@@ -108,7 +109,9 @@ private[sql] object JsonRDD extends Logging {
         val newType = dataType match {
           case NullType => StringType
           case ArrayType(NullType, containsNull) => ArrayType(StringType, containsNull)
-          case struct: StructType => nullTypeToStringType(struct)
+          case ArrayType(struct: StructType, containsNull) =>
+            ArrayType(nullTypeToStringType(struct), containsNull)
+          case struct: StructType =>nullTypeToStringType(struct)
           case other: DataType => other
         }
         StructField(fieldName, newType, nullable)

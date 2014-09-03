@@ -23,6 +23,7 @@ import org.apache.spark.sql.catalyst.planning._
 import org.apache.spark.sql.catalyst.plans._
 import org.apache.spark.sql.catalyst.plans.logical.LogicalPlan
 import org.apache.spark.sql.catalyst.plans.physical._
+import org.apache.spark.sql.catalyst.types._
 import org.apache.spark.sql.columnar.{InMemoryRelation, InMemoryColumnarTableScan}
 import org.apache.spark.sql.parquet._
 
@@ -94,6 +95,10 @@ private[sql] abstract class SparkStrategies extends QueryPlanner[SparkPlan] {
             leftKeys, rightKeys, buildSide, planLater(left), planLater(right))
         condition.map(Filter(_, hashJoin)).getOrElse(hashJoin) :: Nil
 
+      case ExtractEquiJoinKeys(joinType, leftKeys, rightKeys, condition, left, right) =>
+        execution.HashOuterJoin(
+          leftKeys, rightKeys, joinType, condition, planLater(left), planLater(right)) :: Nil
+
       case _ => Nil
     }
   }
@@ -144,7 +149,10 @@ private[sql] abstract class SparkStrategies extends QueryPlanner[SparkPlan] {
     }
 
     def canBeCodeGened(aggs: Seq[AggregateExpression]) = !aggs.exists {
-      case _: Sum | _: Count => false
+      case _: Sum | _: Count | _: Max | _: CombineSetsAndCount => false
+      // The generated set implementation is pretty limited ATM.
+      case CollectHashSet(exprs) if exprs.size == 1  &&
+           Seq(IntegerType, LongType).contains(exprs.head.dataType) => false
       case _ => true
     }
 
@@ -155,8 +163,10 @@ private[sql] abstract class SparkStrategies extends QueryPlanner[SparkPlan] {
   object BroadcastNestedLoopJoin extends Strategy {
     def apply(plan: LogicalPlan): Seq[SparkPlan] = plan match {
       case logical.Join(left, right, joinType, condition) =>
+        val buildSide =
+          if (right.statistics.sizeInBytes <= left.statistics.sizeInBytes) BuildRight else BuildLeft
         execution.BroadcastNestedLoopJoin(
-          planLater(left), planLater(right), joinType, condition) :: Nil
+          planLater(left), planLater(right), buildSide, joinType, condition) :: Nil
       case _ => Nil
     }
   }
@@ -280,6 +290,8 @@ private[sql] abstract class SparkStrategies extends QueryPlanner[SparkPlan] {
         execution.ExistingRdd(Nil, singleRowRdd) :: Nil
       case logical.Repartition(expressions, child) =>
         execution.Exchange(HashPartitioning(expressions, numPartitions), planLater(child)) :: Nil
+      case e @ EvaluatePython(udf, child) =>
+        BatchPythonEvaluation(udf, e.output, planLater(child)) :: Nil
       case SparkLogicalPlan(existingPlan) => existingPlan :: Nil
       case _ => Nil
     }
@@ -289,8 +301,8 @@ private[sql] abstract class SparkStrategies extends QueryPlanner[SparkPlan] {
     def apply(plan: LogicalPlan): Seq[SparkPlan] = plan match {
       case logical.SetCommand(key, value) =>
         Seq(execution.SetCommand(key, value, plan.output)(context))
-      case logical.ExplainCommand(logicalPlan) =>
-        Seq(execution.ExplainCommand(logicalPlan, plan.output)(context))
+      case logical.ExplainCommand(logicalPlan, extended) =>
+        Seq(execution.ExplainCommand(logicalPlan, plan.output, extended)(context))
       case logical.CacheCommand(tableName, cache) =>
         Seq(execution.CacheCommand(tableName, cache)(context))
       case _ => Nil

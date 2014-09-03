@@ -36,6 +36,7 @@ import org.apache.hadoop.mapred.{FileInputFormat, InputFormat, JobConf, Sequence
 import org.apache.hadoop.mapreduce.{InputFormat => NewInputFormat, Job => NewHadoopJob}
 import org.apache.hadoop.mapreduce.lib.input.{FileInputFormat => NewFileInputFormat}
 import org.apache.mesos.MesosNativeLibrary
+import akka.actor.Props
 
 import org.apache.spark.annotation.{DeveloperApi, Experimental}
 import org.apache.spark.broadcast.Broadcast
@@ -47,7 +48,7 @@ import org.apache.spark.scheduler._
 import org.apache.spark.scheduler.cluster.{CoarseGrainedSchedulerBackend, SparkDeploySchedulerBackend, SimrSchedulerBackend}
 import org.apache.spark.scheduler.cluster.mesos.{CoarseMesosSchedulerBackend, MesosSchedulerBackend}
 import org.apache.spark.scheduler.local.LocalBackend
-import org.apache.spark.storage.{BlockManagerSource, RDDInfo, StorageStatus, StorageUtils}
+import org.apache.spark.storage._
 import org.apache.spark.ui.SparkUI
 import org.apache.spark.util.{CallSite, ClosureCleaner, MetadataCleaner, MetadataCleanerType, TimeStampedWeakValueHashMap, Utils}
 
@@ -223,26 +224,7 @@ class SparkContext(config: SparkConf) extends Logging {
   ui.bind()
 
   /** A default Hadoop Configuration for the Hadoop code (e.g. file systems) that we reuse. */
-  val hadoopConfiguration: Configuration = {
-    val hadoopConf = SparkHadoopUtil.get.newConfiguration()
-    // Explicitly check for S3 environment variables
-    if (System.getenv("AWS_ACCESS_KEY_ID") != null &&
-        System.getenv("AWS_SECRET_ACCESS_KEY") != null) {
-      hadoopConf.set("fs.s3.awsAccessKeyId", System.getenv("AWS_ACCESS_KEY_ID"))
-      hadoopConf.set("fs.s3n.awsAccessKeyId", System.getenv("AWS_ACCESS_KEY_ID"))
-      hadoopConf.set("fs.s3.awsSecretAccessKey", System.getenv("AWS_SECRET_ACCESS_KEY"))
-      hadoopConf.set("fs.s3n.awsSecretAccessKey", System.getenv("AWS_SECRET_ACCESS_KEY"))
-    }
-    // Copy any "spark.hadoop.foo=bar" system properties into conf as "foo=bar"
-    conf.getAll.foreach { case (key, value) =>
-      if (key.startsWith("spark.hadoop.")) {
-        hadoopConf.set(key.substring("spark.hadoop.".length), value)
-      }
-    }
-    val bufferSize = conf.get("spark.buffer.size", "65536")
-    hadoopConf.set("io.file.buffer.size", bufferSize)
-    hadoopConf
-  }
+  val hadoopConfiguration = SparkHadoopUtil.get.newConfiguration(conf)
 
   // Optionally log Spark events
   private[spark] val eventLogger: Option[EventLoggingListener] = {
@@ -289,7 +271,7 @@ class SparkContext(config: SparkConf) extends Logging {
     value <- Option(System.getenv(envKey)).orElse(Option(System.getProperty(propKey)))} {
     executorEnvs(envKey) = value
   }
-  Option(System.getenv("SPARK_PREPEND_CLASSES")).foreach { v => 
+  Option(System.getenv("SPARK_PREPEND_CLASSES")).foreach { v =>
     executorEnvs("SPARK_PREPEND_CLASSES") = v
   }
   // The Mesos scheduler backend relies on this environment variable to set executor memory.
@@ -307,6 +289,8 @@ class SparkContext(config: SparkConf) extends Logging {
 
   // Create and start the scheduler
   private[spark] var taskScheduler = SparkContext.createTaskScheduler(this, master)
+  private val heartbeatReceiver = env.actorSystem.actorOf(
+    Props(new HeartbeatReceiver(taskScheduler)), "HeartbeatReceiver")
   @volatile private[spark] var dagScheduler: DAGScheduler = _
   try {
     dagScheduler = new DAGScheduler(this)
@@ -455,7 +439,7 @@ class SparkContext(config: SparkConf) extends Logging {
   /** Distribute a local Scala collection to form an RDD, with one or more
     * location preferences (hostnames of Spark nodes) for each object.
     * Create a new partition for each collection item. */
-   def makeRDD[T: ClassTag](seq: Seq[(T, Seq[String])]): RDD[T] = {
+  def makeRDD[T: ClassTag](seq: Seq[(T, Seq[String])]): RDD[T] = {
     val indexToPrefs = seq.zipWithIndex.map(t => (t._2, t._1._2)).toMap
     new ParallelCollectionRDD[T](this, seq.map(_._1), seq.size, indexToPrefs)
   }
@@ -758,6 +742,15 @@ class SparkContext(config: SparkConf) extends Logging {
     new Accumulator(initialValue, param)
 
   /**
+   * Create an [[org.apache.spark.Accumulator]] variable of a given type, with a name for display
+   * in the Spark UI. Tasks can "add" values to the accumulator using the `+=` method. Only the
+   * driver can access the accumulator's `value`.
+   */
+  def accumulator[T](initialValue: T, name: String)(implicit param: AccumulatorParam[T]) = {
+    new Accumulator(initialValue, param, Some(name))
+  }
+
+  /**
    * Create an [[org.apache.spark.Accumulable]] shared variable, to which tasks can add values
    * with `+=`. Only the driver can access the accumuable's `value`.
    * @tparam T accumulator type
@@ -765,6 +758,16 @@ class SparkContext(config: SparkConf) extends Logging {
    */
   def accumulable[T, R](initialValue: T)(implicit param: AccumulableParam[T, R]) =
     new Accumulable(initialValue, param)
+
+  /**
+   * Create an [[org.apache.spark.Accumulable]] shared variable, with a name for display in the
+   * Spark UI. Tasks can add values to the accumuable using the `+=` operator. Only the driver can
+   * access the accumuable's `value`.
+   * @tparam T accumulator type
+   * @tparam R type that can be added to the accumulator
+   */
+  def accumulable[T, R](initialValue: T, name: String)(implicit param: AccumulableParam[T, R]) =
+    new Accumulable(initialValue, param, Some(name))
 
   /**
    * Create an accumulator from a "mutable collection" type.
@@ -793,7 +796,7 @@ class SparkContext(config: SparkConf) extends Logging {
    * Add a file to be downloaded with this Spark job on every node.
    * The `path` passed can be either a local file, a file in HDFS (or other Hadoop-supported
    * filesystems), or an HTTP, HTTPS or FTP URI.  To access the file in Spark jobs,
-   * use `SparkFiles.get(path)` to find its download location.
+   * use `SparkFiles.get(fileName)` to find its download location.
    */
   def addFile(path: String) {
     val uri = new URI(path)
@@ -805,7 +808,8 @@ class SparkContext(config: SparkConf) extends Logging {
     addedFiles(key) = System.currentTimeMillis
 
     // Fetch the file locally in case a job is executed using DAGScheduler.runLocally().
-    Utils.fetchFile(path, new File(SparkFiles.getRootDirectory()), conf, env.securityManager)
+    Utils.fetchFile(path, new File(SparkFiles.getRootDirectory()), conf, env.securityManager,
+      hadoopConfiguration)
 
     logInfo("Added file " + path + " at " + key + " with timestamp " + addedFiles(key))
     postEnvironmentUpdate()
@@ -840,7 +844,9 @@ class SparkContext(config: SparkConf) extends Logging {
    */
   @DeveloperApi
   def getRDDStorageInfo: Array[RDDInfo] = {
-    StorageUtils.rddInfoFromStorageStatus(getExecutorStorageStatus, this)
+    val rddInfos = persistentRdds.values.map(RDDInfo.fromRdd).toArray
+    StorageUtils.updateRddInfo(rddInfos, getExecutorStorageStatus)
+    rddInfos.filter(_.isCached)
   }
 
   /**
@@ -990,15 +996,15 @@ class SparkContext(config: SparkConf) extends Logging {
     val dagSchedulerCopy = dagScheduler
     dagScheduler = null
     if (dagSchedulerCopy != null) {
+      env.metricsSystem.report()
       metadataCleaner.cancel()
+      env.actorSystem.stop(heartbeatReceiver)
       cleaner.foreach(_.stop())
       dagSchedulerCopy.stop()
       taskScheduler = null
       // TODO: Cache.stop()?
       env.stop()
       SparkEnv.set(null)
-      ShuffleMapTask.clearCache()
-      ResultTask.clearCache()
       listenerBus.stop()
       eventLogger.foreach(_.stop())
       logInfo("Successfully stopped SparkContext")
@@ -1205,10 +1211,10 @@ class SparkContext(config: SparkConf) extends Logging {
   /**
    * Clean a closure to make it ready to serialized and send to tasks
    * (removes unreferenced variables in $outer's, updates REPL variables)
-   * If <tt>checkSerializable</tt> is set, <tt>clean</tt> will also proactively 
-   * check to see if <tt>f</tt> is serializable and throw a <tt>SparkException</tt> 
+   * If <tt>checkSerializable</tt> is set, <tt>clean</tt> will also proactively
+   * check to see if <tt>f</tt> is serializable and throw a <tt>SparkException</tt>
    * if not.
-   * 
+   *
    * @param f the closure to clean
    * @param checkSerializable whether or not to immediately check <tt>f</tt> for serializability
    * @throws <tt>SparkException<tt> if <tt>checkSerializable</tt> is set but <tt>f</tt> is not
@@ -1453,9 +1459,9 @@ object SparkContext extends Logging {
   /** Creates a task scheduler based on a given master URL. Extracted for testing. */
   private def createTaskScheduler(sc: SparkContext, master: String): TaskScheduler = {
     // Regular expression used for local[N] and local[*] master formats
-    val LOCAL_N_REGEX = """local\[([0-9\*]+)\]""".r
+    val LOCAL_N_REGEX = """local\[([0-9]+|\*)\]""".r
     // Regular expression for local[N, maxRetries], used in tests with failing tasks
-    val LOCAL_N_FAILURES_REGEX = """local\[([0-9]+)\s*,\s*([0-9]+)\]""".r
+    val LOCAL_N_FAILURES_REGEX = """local\[([0-9]+|\*)\s*,\s*([0-9]+)\]""".r
     // Regular expression for simulating a Spark cluster of [N, cores, memory] locally
     val LOCAL_CLUSTER_REGEX = """local-cluster\[\s*([0-9]+)\s*,\s*([0-9]+)\s*,\s*([0-9]+)\s*]""".r
     // Regular expression for connecting to Spark deploy clusters
@@ -1485,8 +1491,12 @@ object SparkContext extends Logging {
         scheduler
 
       case LOCAL_N_FAILURES_REGEX(threads, maxFailures) =>
+        def localCpuCount = Runtime.getRuntime.availableProcessors()
+        // local[*, M] means the number of cores on the computer with M failures
+        // local[N, M] means exactly N threads with M failures
+        val threadCount = if (threads == "*") localCpuCount else threads.toInt
         val scheduler = new TaskSchedulerImpl(sc, maxFailures.toInt, isLocal = true)
-        val backend = new LocalBackend(scheduler, threads.toInt)
+        val backend = new LocalBackend(scheduler, threadCount)
         scheduler.initialize(backend)
         scheduler
 
@@ -1609,4 +1619,3 @@ private[spark] class WritableConverter[T](
     val writableClass: ClassTag[T] => Class[_ <: Writable],
     val convert: Writable => T)
   extends Serializable
-

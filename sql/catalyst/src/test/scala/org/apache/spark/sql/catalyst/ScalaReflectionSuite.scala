@@ -57,7 +57,9 @@ case class OptionalData(
 
 case class ComplexData(
     arrayField: Seq[Int],
-    mapField: Map[Int, String],
+    arrayFieldContainsNull: Seq[java.lang.Integer],
+    mapField: Map[Int, Long],
+    mapFieldValueContainsNull: Map[Int, java.lang.Long],
     structField: PrimitiveData)
 
 case class GenericData[A](
@@ -116,8 +118,22 @@ class ScalaReflectionSuite extends FunSuite {
     val schema = schemaFor[ComplexData]
     assert(schema === Schema(
       StructType(Seq(
-        StructField("arrayField", ArrayType(IntegerType), nullable = true),
-        StructField("mapField", MapType(IntegerType, StringType), nullable = true),
+        StructField(
+          "arrayField",
+          ArrayType(IntegerType, containsNull = false),
+          nullable = true),
+        StructField(
+          "arrayFieldContainsNull",
+          ArrayType(IntegerType, containsNull = true),
+          nullable = true),
+        StructField(
+          "mapField",
+          MapType(IntegerType, LongType, valueContainsNull = false),
+          nullable = true),
+        StructField(
+          "mapFieldValueContainsNull",
+          MapType(IntegerType, LongType, valueContainsNull = true),
+          nullable = true),
         StructField(
           "structField",
           StructType(Seq(
@@ -182,7 +198,7 @@ class ScalaReflectionSuite extends FunSuite {
     assert(DecimalType === typeOfObject(BigDecimal("1.7976931348623157E318")))
 
     // TimestampType
-    assert(TimestampType === typeOfObject(java.sql.Timestamp.valueOf("2014-7-25 10:26:00")))
+    assert(TimestampType === typeOfObject(java.sql.Timestamp.valueOf("2014-07-25 10:26:00")))
 
     // NullType
     assert(NullType === typeOfObject(null))

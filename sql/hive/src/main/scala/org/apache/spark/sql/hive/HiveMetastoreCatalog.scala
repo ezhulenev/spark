@@ -19,16 +19,16 @@ package org.apache.spark.sql.hive
 
 import scala.util.parsing.combinator.RegexParsers
 
-import org.apache.hadoop.fs.Path
-import org.apache.hadoop.hive.conf.HiveConf
 import org.apache.hadoop.hive.metastore.api.{FieldSchema, StorageDescriptor, SerDeInfo}
 import org.apache.hadoop.hive.metastore.api.{Table => TTable, Partition => TPartition}
 import org.apache.hadoop.hive.ql.metadata.{Hive, Partition, Table}
 import org.apache.hadoop.hive.ql.plan.TableDesc
+import org.apache.hadoop.hive.ql.stats.StatsSetupConst
 import org.apache.hadoop.hive.serde2.Deserializer
 
 import org.apache.spark.annotation.DeveloperApi
-import org.apache.spark.sql.{SQLContext, Logging}
+import org.apache.spark.Logging
+import org.apache.spark.sql.SQLContext
 import org.apache.spark.sql.catalyst.analysis.{EliminateAnalysisOperators, Catalog}
 import org.apache.spark.sql.catalyst.expressions._
 import org.apache.spark.sql.catalyst.plans.logical
@@ -37,6 +37,7 @@ import org.apache.spark.sql.catalyst.rules._
 import org.apache.spark.sql.catalyst.types._
 import org.apache.spark.sql.columnar.InMemoryRelation
 import org.apache.spark.sql.hive.execution.HiveTableScan
+import org.apache.spark.util.Utils
 
 /* Implicit conversions */
 import scala.collection.JavaConversions._
@@ -136,7 +137,7 @@ private[hive] class HiveMetastoreCatalog(hive: HiveContext) extends Catalog with
         castChildOutput(p, table, child)
 
       case p @ logical.InsertIntoTable(
-                 InMemoryRelation(_, _,
+                 InMemoryRelation(_, _, _,
                    HiveTableScan(_, table, _)), _, child, _) =>
         castChildOutput(p, table, child)
     }
@@ -264,9 +265,9 @@ private[hive] case class MetastoreRelation
   // org.apache.hadoop.hive.ql.metadata.Partition will cause a NotSerializableException
   // which indicates the SerDe we used is not Serializable.
 
-  @transient lazy val hiveQlTable = new Table(table)
+  @transient val hiveQlTable = new Table(table)
 
-  def hiveQlPartitions = partitions.map { p =>
+  @transient val hiveQlPartitions = partitions.map { p =>
     new Partition(hiveQlTable, p)
   }
 
@@ -277,16 +278,19 @@ private[hive] case class MetastoreRelation
       // relatively cheap if parameters for the table are populated into the metastore.  An
       // alternative would be going through Hadoop's FileSystem API, which can be expensive if a lot
       // of RPCs are involved.  Besides `totalSize`, there are also `numFiles`, `numRows`,
-      // `rawDataSize` keys that we can look at in the future.
+      // `rawDataSize` keys (see StatsSetupConst in Hive) that we can look at in the future.
       BigInt(
-        Option(hiveQlTable.getParameters.get("totalSize"))
+        Option(hiveQlTable.getParameters.get(StatsSetupConst.TOTAL_SIZE))
           .map(_.toLong)
           .getOrElse(sqlContext.defaultSizeInBytes))
     }
   )
 
   val tableDesc = new TableDesc(
-    Class.forName(hiveQlTable.getSerializationLib).asInstanceOf[Class[Deserializer]],
+    Class.forName(
+      hiveQlTable.getSerializationLib,
+      true,
+      Utils.getContextOrSparkClassLoader).asInstanceOf[Class[Deserializer]],
     hiveQlTable.getInputFormatClass,
     // The class of table should be org.apache.hadoop.hive.ql.metadata.Table because
     // getOutputFormatClass will use HiveFileFormatUtils.getOutputFormatSubstitute to

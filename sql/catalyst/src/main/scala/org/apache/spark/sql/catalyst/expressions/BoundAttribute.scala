@@ -17,7 +17,7 @@
 
 package org.apache.spark.sql.catalyst.expressions
 
-import org.apache.spark.sql.catalyst.Logging
+import org.apache.spark.Logging
 import org.apache.spark.sql.catalyst.errors.attachTree
 import org.apache.spark.sql.catalyst.types._
 import org.apache.spark.sql.catalyst.trees
@@ -31,8 +31,6 @@ case class BoundReference(ordinal: Int, dataType: DataType, nullable: Boolean)
   extends Expression with trees.LeafNode[Expression] {
 
   type EvaluatedType = Any
-
-  override def references = Set.empty
 
   override def toString = s"input[$ordinal]"
 

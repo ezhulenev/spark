@@ -67,7 +67,7 @@ import org.apache.spark.api.java.JavaRDD
  *  val rdd = sc.parallelize((1 to 100).map(i => Record(i, s"val_$i")))
  *  // Any RDD containing case classes can be registered as a table.  The schema of the table is
  *  // automatically inferred using scala reflection.
- *  rdd.registerAsTable("records")
+ *  rdd.registerTempTable("records")
  *
  *  val results: SchemaRDD = sql("SELECT * FROM records")
  * }}}
@@ -382,36 +382,39 @@ class SchemaRDD(
   private[sql] def javaToPython: JavaRDD[Array[Byte]] = {
     import scala.collection.Map
 
-    def toJava(obj: Any, dataType: DataType): Any = dataType match {
-      case struct: StructType => rowToMap(obj.asInstanceOf[Row], struct)
-      case array: ArrayType => obj match {
-        case seq: Seq[Any] => seq.map(x => toJava(x, array.elementType)).asJava
-        case list: JList[_] => list.map(x => toJava(x, array.elementType)).asJava
-        case arr if arr != null && arr.getClass.isArray =>
-          arr.asInstanceOf[Array[Any]].map(x => toJava(x, array.elementType))
-        case other => other
-      }
-      case mt: MapType => obj.asInstanceOf[Map[_, _]].map {
+    def toJava(obj: Any, dataType: DataType): Any = (obj, dataType) match {
+      case (null, _) => null
+
+      case (obj: Row, struct: StructType) => rowToArray(obj, struct)
+
+      case (seq: Seq[Any], array: ArrayType) =>
+        seq.map(x => toJava(x, array.elementType)).asJava
+      case (list: JList[_], array: ArrayType) =>
+        list.map(x => toJava(x, array.elementType)).asJava
+      case (arr, array: ArrayType) if arr.getClass.isArray =>
+        arr.asInstanceOf[Array[Any]].map(x => toJava(x, array.elementType))
+
+      case (obj: Map[_, _], mt: MapType) => obj.map {
         case (k, v) => (k, toJava(v, mt.valueType)) // key should be primitive type
       }.asJava
+
       // Pyrolite can handle Timestamp
-      case other => obj
+      case (other, _) => other
     }
-    def rowToMap(row: Row, structType: StructType): JMap[String, Any] = {
-      val fields = structType.fields.map(field => (field.name, field.dataType))
-      val map: JMap[String, Any] = new java.util.HashMap
-      row.zip(fields).foreach {
-        case (obj, (attrName, dataType)) => map.put(attrName, toJava(obj, dataType))
-      }
-      map
+
+    def rowToArray(row: Row, structType: StructType): Array[Any] = {
+      val fields = structType.fields.map(field => field.dataType)
+      row.zip(fields).map {
+        case (obj, dataType) => toJava(obj, dataType)
+      }.toArray
     }
 
     val rowSchema = StructType.fromAttributes(this.queryExecution.analyzed.output)
     this.mapPartitions { iter =>
       val pickle = new Pickler
       iter.map { row =>
-        rowToMap(row, rowSchema)
-      }.grouped(10).map(batched => pickle.dumps(batched.toArray))
+        rowToArray(row, rowSchema)
+      }.grouped(100).map(batched => pickle.dumps(batched.toArray))
     }
   }
 

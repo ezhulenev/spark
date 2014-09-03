@@ -32,12 +32,12 @@ import org.apache.hadoop.hive.common.{HiveInterruptCallback, HiveInterruptUtils,
 import org.apache.hadoop.hive.conf.HiveConf
 import org.apache.hadoop.hive.ql.Driver
 import org.apache.hadoop.hive.ql.exec.Utilities
-import org.apache.hadoop.hive.ql.processors.{CommandProcessor, CommandProcessorFactory}
+import org.apache.hadoop.hive.ql.processors.{SetProcessor, CommandProcessor, CommandProcessorFactory}
 import org.apache.hadoop.hive.ql.session.SessionState
 import org.apache.hadoop.hive.shims.ShimLoader
 import org.apache.thrift.transport.TSocket
 
-import org.apache.spark.sql.Logging
+import org.apache.spark.Logging
 
 private[hive] object SparkSQLCLIDriver {
   private var prompt = "spark-sql"
@@ -278,7 +278,7 @@ private[hive] class SparkSQLCLIDriver extends CliDriver with Logging {
       val proc: CommandProcessor = CommandProcessorFactory.get(tokens(0), hconf)
 
       if (proc != null) {
-        if (proc.isInstanceOf[Driver]) {
+        if (proc.isInstanceOf[Driver] || proc.isInstanceOf[SetProcessor]) {
           val driver = new SparkSQLDriver
 
           driver.init()
@@ -288,8 +288,10 @@ private[hive] class SparkSQLCLIDriver extends CliDriver with Logging {
             out.println(cmd)
           }
 
-          ret = driver.run(cmd).getResponseCode
+          val rc = driver.run(cmd)
+          ret = rc.getResponseCode
           if (ret != 0) {
+            console.printError(rc.getErrorMessage())
             driver.close()
             return ret
           }

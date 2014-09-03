@@ -130,11 +130,11 @@ class JsonSuite extends QueryTest {
     checkDataType(
       ArrayType(IntegerType, true), ArrayType(IntegerType, true), ArrayType(IntegerType, true))
     checkDataType(
-      ArrayType(IntegerType, false), ArrayType(IntegerType), ArrayType(IntegerType, false))
+      ArrayType(IntegerType, false), ArrayType(IntegerType), ArrayType(IntegerType, true))
     checkDataType(
       ArrayType(IntegerType, false), ArrayType(IntegerType, false), ArrayType(IntegerType, false))
     checkDataType(
-      ArrayType(IntegerType, false), ArrayType(IntegerType, false), ArrayType(IntegerType))
+      ArrayType(IntegerType, false), ArrayType(IntegerType, true), ArrayType(IntegerType, true))
 
     // StructType
     checkDataType(StructType(Nil), StructType(Nil), StructType(Nil))
@@ -183,7 +183,7 @@ class JsonSuite extends QueryTest {
 
     assert(expectedSchema === jsonSchemaRDD.schema)
 
-    jsonSchemaRDD.registerAsTable("jsonTable")
+    jsonSchemaRDD.registerTempTable("jsonTable")
 
     checkAnswer(
       sql("select * from jsonTable"),
@@ -201,29 +201,30 @@ class JsonSuite extends QueryTest {
     val jsonSchemaRDD = jsonRDD(complexFieldAndType)
 
     val expectedSchema = StructType(
-      StructField("arrayOfArray1", ArrayType(ArrayType(StringType)), true) ::
-      StructField("arrayOfArray2", ArrayType(ArrayType(DoubleType)), true) ::
-      StructField("arrayOfBigInteger", ArrayType(DecimalType), true) ::
-      StructField("arrayOfBoolean", ArrayType(BooleanType), true) ::
-      StructField("arrayOfDouble", ArrayType(DoubleType), true) ::
-      StructField("arrayOfInteger", ArrayType(IntegerType), true) ::
-      StructField("arrayOfLong", ArrayType(LongType), true) ::
+      StructField("arrayOfArray1", ArrayType(ArrayType(StringType, false), false), true) ::
+      StructField("arrayOfArray2", ArrayType(ArrayType(DoubleType, false), false), true) ::
+      StructField("arrayOfBigInteger", ArrayType(DecimalType, false), true) ::
+      StructField("arrayOfBoolean", ArrayType(BooleanType, false), true) ::
+      StructField("arrayOfDouble", ArrayType(DoubleType, false), true) ::
+      StructField("arrayOfInteger", ArrayType(IntegerType, false), true) ::
+      StructField("arrayOfLong", ArrayType(LongType, false), true) ::
       StructField("arrayOfNull", ArrayType(StringType, true), true) ::
-      StructField("arrayOfString", ArrayType(StringType), true) ::
+      StructField("arrayOfString", ArrayType(StringType, false), true) ::
       StructField("arrayOfStruct", ArrayType(
         StructType(
           StructField("field1", BooleanType, true) ::
-          StructField("field2", StringType, true) :: Nil)), true) ::
+          StructField("field2", StringType, true) ::
+          StructField("field3", StringType, true) :: Nil), false), true) ::
       StructField("struct", StructType(
       StructField("field1", BooleanType, true) ::
       StructField("field2", DecimalType, true) :: Nil), true) ::
       StructField("structWithArrayFields", StructType(
-        StructField("field1", ArrayType(IntegerType), true) ::
-        StructField("field2", ArrayType(StringType), true) :: Nil), true) :: Nil)
+        StructField("field1", ArrayType(IntegerType, false), true) ::
+        StructField("field2", ArrayType(StringType, false), true) :: Nil), true) :: Nil)
 
     assert(expectedSchema === jsonSchemaRDD.schema)
 
-    jsonSchemaRDD.registerAsTable("jsonTable")
+    jsonSchemaRDD.registerTempTable("jsonTable")
 
     // Access elements of a primitive array.
     checkAnswer(
@@ -263,8 +264,12 @@ class JsonSuite extends QueryTest {
 
     // Access elements of an array of structs.
     checkAnswer(
-      sql("select arrayOfStruct[0], arrayOfStruct[1], arrayOfStruct[2] from jsonTable"),
-      (true :: "str1" :: Nil, false :: null :: Nil, null) :: Nil
+      sql("select arrayOfStruct[0], arrayOfStruct[1], arrayOfStruct[2], arrayOfStruct[3] " +
+        "from jsonTable"),
+      (true :: "str1" :: null :: Nil,
+      false :: null :: null :: Nil,
+      null :: null :: null :: Nil,
+      null) :: Nil
     )
 
     // Access a struct and fields inside of it.
@@ -291,7 +296,7 @@ class JsonSuite extends QueryTest {
 
   ignore("Complex field and type inferring (Ignored)") {
     val jsonSchemaRDD = jsonRDD(complexFieldAndType)
-    jsonSchemaRDD.registerAsTable("jsonTable")
+    jsonSchemaRDD.registerTempTable("jsonTable")
 
     // Right now, "field1" and "field2" are treated as aliases. We should fix it.
     checkAnswer(
@@ -320,7 +325,7 @@ class JsonSuite extends QueryTest {
 
     assert(expectedSchema === jsonSchemaRDD.schema)
 
-    jsonSchemaRDD.registerAsTable("jsonTable")
+    jsonSchemaRDD.registerTempTable("jsonTable")
 
     checkAnswer(
       sql("select * from jsonTable"),
@@ -374,7 +379,7 @@ class JsonSuite extends QueryTest {
 
   ignore("Type conflict in primitive field values (Ignored)") {
     val jsonSchemaRDD = jsonRDD(primitiveFieldValueTypeConflict)
-    jsonSchemaRDD.registerAsTable("jsonTable")
+    jsonSchemaRDD.registerTempTable("jsonTable")
 
     // Right now, the analyzer does not promote strings in a boolean expreesion.
     // Number and Boolean conflict: resolve the type as boolean in this query.
@@ -436,7 +441,7 @@ class JsonSuite extends QueryTest {
     val jsonSchemaRDD = jsonRDD(complexFieldValueTypeConflict)
 
     val expectedSchema = StructType(
-      StructField("array", ArrayType(IntegerType), true) ::
+      StructField("array", ArrayType(IntegerType, false), true) ::
       StructField("num_struct", StringType, true) ::
       StructField("str_array", StringType, true) ::
       StructField("struct", StructType(
@@ -445,7 +450,7 @@ class JsonSuite extends QueryTest {
 
     assert(expectedSchema === jsonSchemaRDD.schema)
 
-    jsonSchemaRDD.registerAsTable("jsonTable")
+    jsonSchemaRDD.registerTempTable("jsonTable")
 
     checkAnswer(
       sql("select * from jsonTable"),
@@ -462,11 +467,11 @@ class JsonSuite extends QueryTest {
     val expectedSchema = StructType(
       StructField("array1", ArrayType(StringType, true), true) ::
       StructField("array2", ArrayType(StructType(
-        StructField("field", LongType, true) :: Nil)), true) :: Nil)
+        StructField("field", LongType, true) :: Nil), false), true) :: Nil)
 
     assert(expectedSchema === jsonSchemaRDD.schema)
 
-    jsonSchemaRDD.registerAsTable("jsonTable")
+    jsonSchemaRDD.registerTempTable("jsonTable")
 
     checkAnswer(
       sql("select * from jsonTable"),
@@ -487,14 +492,14 @@ class JsonSuite extends QueryTest {
     val expectedSchema = StructType(
       StructField("a", BooleanType, true) ::
       StructField("b", LongType, true) ::
-      StructField("c", ArrayType(IntegerType), true) ::
+      StructField("c", ArrayType(IntegerType, false), true) ::
       StructField("d", StructType(
         StructField("field", BooleanType, true) :: Nil), true) ::
       StructField("e", StringType, true) :: Nil)
 
     assert(expectedSchema === jsonSchemaRDD.schema)
 
-    jsonSchemaRDD.registerAsTable("jsonTable")
+    jsonSchemaRDD.registerTempTable("jsonTable")
   }
 
   test("Loading a JSON dataset from a text file") {
@@ -514,7 +519,7 @@ class JsonSuite extends QueryTest {
 
     assert(expectedSchema === jsonSchemaRDD.schema)
 
-    jsonSchemaRDD.registerAsTable("jsonTable")
+    jsonSchemaRDD.registerTempTable("jsonTable")
 
     checkAnswer(
       sql("select * from jsonTable"),
@@ -546,7 +551,7 @@ class JsonSuite extends QueryTest {
 
     assert(schema === jsonSchemaRDD1.schema)
 
-    jsonSchemaRDD1.registerAsTable("jsonTable1")
+    jsonSchemaRDD1.registerTempTable("jsonTable1")
 
     checkAnswer(
       sql("select * from jsonTable1"),
@@ -563,7 +568,7 @@ class JsonSuite extends QueryTest {
 
     assert(schema === jsonSchemaRDD2.schema)
 
-    jsonSchemaRDD2.registerAsTable("jsonTable2")
+    jsonSchemaRDD2.registerTempTable("jsonTable2")
 
     checkAnswer(
       sql("select * from jsonTable2"),

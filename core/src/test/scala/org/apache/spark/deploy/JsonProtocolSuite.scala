@@ -89,7 +89,7 @@ class JsonProtocolSuite extends FunSuite {
 
   def createAppDesc(): ApplicationDescription = {
     val cmd = new Command("mainClass", List("arg1", "arg2"), Map(), Seq(), Seq(), Seq())
-    new ApplicationDescription("name", Some(4), 1234, cmd, Some("sparkHome"), "appUiUrl")
+    new ApplicationDescription("name", Some(4), 1234, cmd, "appUiUrl")
   }
 
   def createAppInfo() : ApplicationInfo = {
@@ -121,8 +121,8 @@ class JsonProtocolSuite extends FunSuite {
       new SparkConf, ExecutorState.RUNNING)
   }
   def createDriverRunner(): DriverRunner = {
-    new DriverRunner("driverId", new File("workDir"), new File("sparkHome"), createDriverDesc(),
-      null, "akka://worker")
+    new DriverRunner(new SparkConf(), "driverId", new File("workDir"), new File("sparkHome"),
+      createDriverDesc(), null, "akka://worker")
   }
 
   def assertValidJson(json: JValue) {
@@ -169,8 +169,7 @@ object JsonConstants {
   val appDescJsonStr =
     """
       |{"name":"name","cores":4,"memoryperslave":1234,
-      |"user":"%s","sparkhome":"sparkHome",
-      |"command":"Command(mainClass,List(arg1, arg2),Map(),List(),List(),List())"}
+      |"user":"%s","command":"Command(mainClass,List(arg1, arg2),Map(),List(),List(),List())"}
     """.format(System.getProperty("user.name", "<unknown>")).stripMargin
 
   val executorRunnerJsonStr =

@@ -29,7 +29,7 @@ import org.json4s.jackson.JsonMethods._
 import org.apache.spark.{Logging, SparkConf, SparkContext}
 import org.apache.spark.deploy.SparkHadoopUtil
 import org.apache.spark.io.CompressionCodec
-import org.apache.spark.util.{FileLogger, JsonProtocol}
+import org.apache.spark.util.{FileLogger, JsonProtocol, Utils}
 
 /**
  * A SparkListener that logs events to persistent storage.
@@ -44,18 +44,22 @@ import org.apache.spark.util.{FileLogger, JsonProtocol}
 private[spark] class EventLoggingListener(
     appName: String,
     sparkConf: SparkConf,
-    hadoopConf: Configuration = SparkHadoopUtil.get.newConfiguration())
+    hadoopConf: Configuration)
   extends SparkListener with Logging {
 
   import EventLoggingListener._
+
+  def this(appName: String, sparkConf: SparkConf) =
+    this(appName, sparkConf, SparkHadoopUtil.get.newConfiguration(sparkConf))
 
   private val shouldCompress = sparkConf.getBoolean("spark.eventLog.compress", false)
   private val shouldOverwrite = sparkConf.getBoolean("spark.eventLog.overwrite", false)
   private val testing = sparkConf.getBoolean("spark.eventLog.testing", false)
   private val outputBufferSize = sparkConf.getInt("spark.eventLog.buffer.kb", 100) * 1024
   private val logBaseDir = sparkConf.get("spark.eventLog.dir", DEFAULT_LOG_DIR).stripSuffix("/")
-  private val name = appName.replaceAll("[ :/]", "-").toLowerCase + "-" + System.currentTimeMillis
-  val logDir = logBaseDir + "/" + name
+  private val name = appName.replaceAll("[ :/]", "-").replaceAll("[${}'\"]", "_")
+    .toLowerCase + "-" + System.currentTimeMillis
+  val logDir = Utils.resolveURI(logBaseDir) + "/" + name.stripSuffix("/")
 
   protected val logger = new FileLogger(logDir, sparkConf, hadoopConf, outputBufferSize,
     shouldCompress, shouldOverwrite, Some(LOG_FILE_PERMISSIONS))
@@ -127,6 +131,8 @@ private[spark] class EventLoggingListener(
     logEvent(event, flushLogger = true)
   override def onApplicationEnd(event: SparkListenerApplicationEnd) =
     logEvent(event, flushLogger = true)
+  // No-op because logging every update would be overkill
+  override def onExecutorMetricsUpdate(event: SparkListenerExecutorMetricsUpdate) { }
 
   /**
    * Stop logging events.
@@ -215,7 +221,7 @@ private[spark] object EventLoggingListener extends Logging {
     } catch {
       case e: Exception =>
         logError("Exception in parsing logging info from directory %s".format(logDir), e)
-      EventLoggingInfo.empty
+        EventLoggingInfo.empty
     }
   }
 

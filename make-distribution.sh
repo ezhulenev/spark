@@ -113,7 +113,17 @@ if ! which mvn &>/dev/null; then
     echo -e "Download Maven from https://maven.apache.org/"
     exit -1;
 fi
+
 VERSION=$(mvn help:evaluate -Dexpression=project.version 2>/dev/null | grep -v "INFO" | tail -n 1)
+SPARK_HADOOP_VERSION=$(mvn help:evaluate -Dexpression=hadoop.version $@ 2>/dev/null\
+    | grep -v "INFO"\
+    | tail -n 1)
+SPARK_HIVE=$(mvn help:evaluate -Dexpression=project.activeProfiles $@ 2>/dev/null\
+    | grep -v "INFO"\
+    | fgrep --count "<id>hive</id>";\
+    # Reset exit status to 0, otherwise the script stops here if the last grep finds nothing\
+    # because we use "set -o pipefail"
+    echo -n)
 
 JAVA_CMD="$JAVA_HOME"/bin/java
 JAVA_VERSION=$("$JAVA_CMD" -version 2>&1)
@@ -128,7 +138,7 @@ if [[ ! "$JAVA_VERSION" =~ "1.6" && -z "$SKIP_JAVA_TEST" ]]; then
   if [[ ! $REPLY =~ ^[Yy]$ ]]; then
     echo "Okay, exiting."
     exit 1
-  fi 
+  fi
 fi
 
 if [ "$NAME" == "none" ]; then
@@ -150,7 +160,7 @@ else
 fi
 
 # Build uber fat JAR
-cd $FWDIR
+cd "$FWDIR"
 
 export MAVEN_OPTS="-Xmx2g -XX:MaxPermSize=512M -XX:ReservedCodeCacheSize=512m"
 
@@ -168,22 +178,22 @@ mkdir -p "$DISTDIR/lib"
 echo "Spark $VERSION$GITREVSTRING built for Hadoop $SPARK_HADOOP_VERSION" > "$DISTDIR/RELEASE"
 
 # Copy jars
-cp $FWDIR/assembly/target/scala*/*assembly*hadoop*.jar "$DISTDIR/lib/"
-cp $FWDIR/examples/target/scala*/spark-examples*.jar "$DISTDIR/lib/"
+cp "$FWDIR"/assembly/target/scala*/*assembly*hadoop*.jar "$DISTDIR/lib/"
+cp "$FWDIR"/examples/target/scala*/spark-examples*.jar "$DISTDIR/lib/"
 
 # Copy example sources (needed for python and SQL)
 mkdir -p "$DISTDIR/examples/src/main"
-cp -r $FWDIR/examples/src/main "$DISTDIR/examples/src/" 
+cp -r "$FWDIR"/examples/src/main "$DISTDIR/examples/src/"
 
-if [ "$SPARK_HIVE" == "true" ]; then
-  cp $FWDIR/lib_managed/jars/datanucleus*.jar "$DISTDIR/lib/"
+if [ "$SPARK_HIVE" == "1" ]; then
+  cp "$FWDIR"/lib_managed/jars/datanucleus*.jar "$DISTDIR/lib/"
 fi
 
 # Copy license and ASF files
 cp "$FWDIR/LICENSE" "$DISTDIR"
 cp "$FWDIR/NOTICE" "$DISTDIR"
 
-if [ -e $FWDIR/CHANGES.txt ]; then
+if [ -e "$FWDIR"/CHANGES.txt ]; then
   cp "$FWDIR/CHANGES.txt" "$DISTDIR"
 fi
 
@@ -199,7 +209,7 @@ cp -r "$FWDIR/ec2" "$DISTDIR"
 
 # Download and copy in tachyon, if requested
 if [ "$SPARK_TACHYON" == "true" ]; then
-  TACHYON_VERSION="0.4.1"
+  TACHYON_VERSION="0.5.0"
   TACHYON_URL="https://github.com/amplab/tachyon/releases/download/v${TACHYON_VERSION}/tachyon-${TACHYON_VERSION}-bin.tar.gz"
 
   TMPD=`mktemp -d 2>/dev/null || mktemp -d -t 'disttmp'`
@@ -209,10 +219,10 @@ if [ "$SPARK_TACHYON" == "true" ]; then
   wget "$TACHYON_URL"
 
   tar xf "tachyon-${TACHYON_VERSION}-bin.tar.gz"
-  cp "tachyon-${TACHYON_VERSION}/target/tachyon-${TACHYON_VERSION}-jar-with-dependencies.jar" "$DISTDIR/lib"
+  cp "tachyon-${TACHYON_VERSION}/core/target/tachyon-${TACHYON_VERSION}-jar-with-dependencies.jar" "$DISTDIR/lib"
   mkdir -p "$DISTDIR/tachyon/src/main/java/tachyon/web"
   cp -r "tachyon-${TACHYON_VERSION}"/{bin,conf,libexec} "$DISTDIR/tachyon"
-  cp -r "tachyon-${TACHYON_VERSION}"/src/main/java/tachyon/web/resources "$DISTDIR/tachyon/src/main/java/tachyon/web"
+  cp -r "tachyon-${TACHYON_VERSION}"/core/src/main/java/tachyon/web "$DISTDIR/tachyon/src/main/java/tachyon/web"
 
   if [[ `uname -a` == Darwin* ]]; then
     # need to run sed differently on osx

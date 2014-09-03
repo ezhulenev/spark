@@ -25,7 +25,7 @@ import org.apache.hadoop.hive.ql.exec.{FunctionInfo, FunctionRegistry}
 import org.apache.hadoop.hive.ql.udf.{UDFType => HiveUDFType}
 import org.apache.hadoop.hive.ql.udf.generic._
 
-import org.apache.spark.sql.Logging
+import org.apache.spark.Logging
 import org.apache.spark.sql.catalyst.analysis
 import org.apache.spark.sql.catalyst.expressions._
 import org.apache.spark.sql.catalyst.types._
@@ -34,7 +34,8 @@ import org.apache.spark.util.Utils.getContextOrSparkClassLoader
 /* Implicit conversions */
 import scala.collection.JavaConversions._
 
-private[hive] object HiveFunctionRegistry extends analysis.FunctionRegistry with HiveInspectors {
+private[hive] abstract class HiveFunctionRegistry
+  extends analysis.FunctionRegistry with HiveInspectors {
 
   def getFunctionInfo(name: String) = FunctionRegistry.getFunctionInfo(name)
 
@@ -54,7 +55,10 @@ private[hive] object HiveFunctionRegistry extends analysis.FunctionRegistry with
 
       HiveSimpleUdf(
         functionClassName,
-        children.zip(expectedDataTypes).map { case (e, t) => Cast(e, t) }
+        children.zip(expectedDataTypes).map {
+          case (e, NullType) => e
+          case (e, t) => Cast(e, t)
+        }
       )
     } else if (classOf[GenericUDF].isAssignableFrom(functionInfo.getFunctionClass)) {
       HiveGenericUdf(functionClassName, children)
@@ -84,7 +88,6 @@ private[hive] abstract class HiveUdf extends Expression with Logging with HiveFu
   type EvaluatedType = Any
 
   def nullable = true
-  def references = children.flatMap(_.references).toSet
 
   lazy val function = createFunction[UDFType]()
 
@@ -92,9 +95,8 @@ private[hive] abstract class HiveUdf extends Expression with Logging with HiveFu
 }
 
 private[hive] case class HiveSimpleUdf(functionClassName: String, children: Seq[Expression])
-  extends HiveUdf {
+  extends HiveUdf with HiveInspectors {
 
-  import org.apache.spark.sql.hive.HiveFunctionRegistry._
   type UDFType = UDF
 
   @transient
@@ -115,22 +117,26 @@ private[hive] case class HiveSimpleUdf(functionClassName: String, children: Seq[
       c.getParameterTypes.size == 1 && primitiveClasses.contains(c.getParameterTypes.head)
     }
 
-    val constructor = matchingConstructor.getOrElse(
-      sys.error(s"No matching wrapper found, options: ${argClass.getConstructors.toSeq}."))
-
-    (a: Any) => {
-      logger.debug(
-        s"Wrapping $a of type ${if (a == null) "null" else a.getClass.getName} using $constructor.")
-      // We must make sure that primitives get boxed java style.
-      if (a == null) {
-        null
-      } else {
-        constructor.newInstance(a match {
-          case i: Int => i: java.lang.Integer
-          case bd: BigDecimal => new HiveDecimal(bd.underlying())
-          case other: AnyRef => other
-        }).asInstanceOf[AnyRef]
-      }
+    matchingConstructor match {
+      case Some(constructor) =>
+        (a: Any) => {
+          logDebug(
+            s"Wrapping $a of type ${if (a == null) "null" else a.getClass.getName} $constructor.")
+          // We must make sure that primitives get boxed java style.
+          if (a == null) {
+            null
+          } else {
+            constructor.newInstance(a match {
+              case i: Int => i: java.lang.Integer
+              case bd: BigDecimal => new HiveDecimal(bd.underlying())
+              case other: AnyRef => other
+            }).asInstanceOf[AnyRef]
+          }
+        }
+      case None =>
+        (a: Any) => a match {
+          case wrapper => wrap(wrapper)
+        }
     }
   }
 
@@ -222,8 +228,6 @@ private[hive] case class HiveGenericUdaf(
 
   def nullable: Boolean = true
 
-  def references: Set[Attribute] = children.map(_.references).flatten.toSet
-
   override def toString = s"$nodeName#$functionClassName(${children.mkString(",")})"
 
   def newInstance() = new HiveUdafFunction(functionClassName, children, this)
@@ -245,8 +249,6 @@ private[hive] case class HiveGenericUdtf(
     aliasNames: Seq[String],
     children: Seq[Expression])
   extends Generator with HiveInspectors with HiveFunctionFactory {
-
-  override def references = children.flatMap(_.references).toSet
 
   @transient
   protected lazy val function: GenericUDTF = createFunction()

@@ -106,6 +106,18 @@ class SparkSubmitSuite extends FunSuite with Matchers {
     appArgs.childArgs should be (Seq("some", "--weird", "args"))
   }
 
+  test("handles arguments to user program with name collision") {
+    val clArgs = Seq(
+      "--name", "myApp",
+      "--class", "Foo",
+      "userjar.jar",
+      "--master", "local",
+      "some",
+      "--weird", "args")
+    val appArgs = new SparkSubmitArguments(clArgs)
+    appArgs.childArgs should be (Seq("--master", "local", "some", "--weird", "args"))
+  }
+
   test("handles YARN cluster mode") {
     val clArgs = Seq(
       "--deploy-mode", "cluster",
@@ -253,6 +265,22 @@ class SparkSubmitSuite extends FunSuite with Matchers {
     sysProps("spark.shuffle.spill") should be ("false")
   }
 
+  test("handles confs with flag equivalents") {
+    val clArgs = Seq(
+      "--deploy-mode", "cluster",
+      "--executor-memory", "5g",
+      "--class", "org.SomeClass",
+      "--conf", "spark.executor.memory=4g",
+      "--conf", "spark.master=yarn",
+      "thejar.jar",
+      "arg1", "arg2")
+    val appArgs = new SparkSubmitArguments(clArgs)
+    val (_, _, sysProps, mainClass) = createLaunchEnv(appArgs)
+    sysProps("spark.executor.memory") should be ("5g")
+    sysProps("spark.master") should be ("yarn-cluster")
+    mainClass should be ("org.apache.spark.deploy.yarn.Client")
+  }
+
   test("launch simple application with spark-submit") {
     val unusedJar = TestUtils.createJarWithClasses(Seq.empty)
     val args = Seq(
@@ -279,7 +307,7 @@ class SparkSubmitSuite extends FunSuite with Matchers {
 
   // NOTE: This is an expensive operation in terms of time (10 seconds+). Use sparingly.
   def runSparkSubmit(args: Seq[String]): String = {
-    val sparkHome = sys.env.get("SPARK_HOME").orElse(sys.props.get("spark.home")).get
+    val sparkHome = sys.props.getOrElse("spark.test.home", fail("spark.test.home is not set!"))
     Utils.executeAndGetOutput(
       Seq("./bin/spark-submit") ++ args,
       new File(sparkHome),
