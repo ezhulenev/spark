@@ -38,7 +38,7 @@ private[sql] trait ColumnBuilder {
   /**
    * Column statistics information
    */
-  def columnStats: ColumnStats[_, _]
+  def columnStats: ColumnStats
 
   /**
    * Returns the final columnar byte buffer.
@@ -47,7 +47,7 @@ private[sql] trait ColumnBuilder {
 }
 
 private[sql] class BasicColumnBuilder[T <: DataType, JvmType](
-    val columnStats: ColumnStats[T, JvmType],
+    val columnStats: ColumnStats,
     val columnType: ColumnType[T, JvmType])
   extends ColumnBuilder {
 
@@ -68,10 +68,9 @@ private[sql] class BasicColumnBuilder[T <: DataType, JvmType](
     buffer.order(ByteOrder.nativeOrder()).putInt(columnType.typeId)
   }
 
-  override def appendFrom(row: Row, ordinal: Int) {
-    val field = columnType.getField(row, ordinal)
-    buffer = ensureFreeSpace(buffer, columnType.actualSize(field))
-    columnType.append(field, buffer)
+  override def appendFrom(row: Row, ordinal: Int): Unit = {
+    buffer = ensureFreeSpace(buffer, columnType.actualSize(row, ordinal))
+    columnType.append(row, ordinal, buffer)
   }
 
   override def build() = {
@@ -81,18 +80,18 @@ private[sql] class BasicColumnBuilder[T <: DataType, JvmType](
 
 private[sql] abstract class ComplexColumnBuilder[T <: DataType, JvmType](
     columnType: ColumnType[T, JvmType])
-  extends BasicColumnBuilder[T, JvmType](new NoopColumnStats[T, JvmType], columnType)
+  extends BasicColumnBuilder[T, JvmType](new NoopColumnStats, columnType)
   with NullableColumnBuilder
 
 private[sql] abstract class NativeColumnBuilder[T <: NativeType](
-    override val columnStats: NativeColumnStats[T],
+    override val columnStats: ColumnStats,
     override val columnType: NativeColumnType[T])
   extends BasicColumnBuilder[T, T#JvmType](columnStats, columnType)
   with NullableColumnBuilder
   with AllCompressionSchemes
   with CompressibleColumnBuilder[T]
 
-private[sql] class BooleanColumnBuilder extends NativeColumnBuilder(new BooleanColumnStats, BOOLEAN)
+private[sql] class BooleanColumnBuilder extends NativeColumnBuilder(new NoopColumnStats, BOOLEAN)
 
 private[sql] class IntColumnBuilder extends NativeColumnBuilder(new IntColumnStats, INT)
 
@@ -142,16 +141,16 @@ private[sql] object ColumnBuilder {
       useCompression: Boolean = false): ColumnBuilder = {
 
     val builder = (typeId match {
-      case INT.typeId     => new IntColumnBuilder
-      case LONG.typeId    => new LongColumnBuilder
-      case FLOAT.typeId   => new FloatColumnBuilder
-      case DOUBLE.typeId  => new DoubleColumnBuilder
-      case BOOLEAN.typeId => new BooleanColumnBuilder
-      case BYTE.typeId    => new ByteColumnBuilder
-      case SHORT.typeId   => new ShortColumnBuilder
-      case STRING.typeId  => new StringColumnBuilder
-      case BINARY.typeId  => new BinaryColumnBuilder
-      case GENERIC.typeId => new GenericColumnBuilder
+      case INT.typeId       => new IntColumnBuilder
+      case LONG.typeId      => new LongColumnBuilder
+      case FLOAT.typeId     => new FloatColumnBuilder
+      case DOUBLE.typeId    => new DoubleColumnBuilder
+      case BOOLEAN.typeId   => new BooleanColumnBuilder
+      case BYTE.typeId      => new ByteColumnBuilder
+      case SHORT.typeId     => new ShortColumnBuilder
+      case STRING.typeId    => new StringColumnBuilder
+      case BINARY.typeId    => new BinaryColumnBuilder
+      case GENERIC.typeId   => new GenericColumnBuilder
       case TIMESTAMP.typeId => new TimestampColumnBuilder
     }).asInstanceOf[ColumnBuilder]
 
