@@ -31,6 +31,7 @@ public class JavaTwitterStreamSuite extends LocalJavaStreamingContext {
   @Test
   public void testTwitterStream() {
     String[] filters = (String[])Arrays.<String>asList("filter1", "filter2").toArray();
+    BoundingBox[] locations = {new BoundingBox(-180.0,-90.0,180.0,90.0)};
     Authorization auth = NullAuthorization.getInstance();
 
     // tests the API, does not actually test data receiving
@@ -42,5 +43,11 @@ public class JavaTwitterStreamSuite extends LocalJavaStreamingContext {
     JavaDStream<Status> test5 = TwitterUtils.createStream(ssc, auth, filters);
     JavaDStream<Status> test6 = TwitterUtils.createStream(ssc,
       auth, filters, StorageLevel.MEMORY_AND_DISK_SER_2());
+    JavaDStream<Status> test7 = TwitterUtils.createStream(ssc, filters, locations);
+    JavaDStream<Status> test8 = TwitterUtils.createStream(
+      ssc, filters, locations, StorageLevel.MEMORY_AND_DISK_SER_2());
+    JavaDStream<Status> test9 = TwitterUtils.createStream(ssc, auth, filters, locations);
+    JavaDStream<Status> test10 = TwitterUtils.createStream(ssc,
+      auth, filters, locations, StorageLevel.MEMORY_AND_DISK_SER_2());
   }
 }
